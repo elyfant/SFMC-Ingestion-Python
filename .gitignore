@@ -21,7 +21,9 @@ state/*.json
 
 # Local configuration (contains deployment-specific values)
 config/app.json
+config/credentials.json
 !config/app.example.json
+!config/credentials.example.json
 
 # Python packaging
 *.egg-info/
@@ -38,3 +40,6 @@ htmlcov/
 # Logs
 logs/
 *.log
+
+#docs
+docs/

@@ -99,6 +99,14 @@ def run_archive_logs_sync(
     backoff_seconds = 15
     while not _shutdown.is_set():
         try:
+            # open_stream() only signs in if NO token is cached yet - it never
+            # checks whether an already-cached one has expired (see
+            # SFMCClient._ensure_auth). Left alone, a stream that dies after
+            # the cached token expires (e.g. overnight) retries forever with
+            # the same dead token and 401s permanently. Forcing a fresh
+            # authenticate() here before every attempt makes each retry
+            # self-healing regardless of *why* the previous connection died.
+            client.authenticate()
             with client.open_stream() as stomp:
                 sub = client.subscribe_connection_events(glider_name, stomp)
                 backoff_seconds = 15  # reset after a successful (re)connect
@@ -130,7 +138,10 @@ def run_archive_logs_sync(
 def main() -> None:
     parser = argparse.ArgumentParser(description="HYDRA RV glider ingestion orchestrator")
     parser.add_argument("--config", type=Path, default=Path("config/app.json"))
-    parser.add_argument("--credentials", type=Path, default=None, help="passed through to sfmc-api if set")
+    parser.add_argument(
+        "--credentials", type=Path, default=None,
+        help="Override the credentialsPath set in config/app.json (usually not needed).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -147,6 +158,27 @@ def main() -> None:
         exclude_file_pattern=config.get("excludeFilePattern", SyncConfig.__dataclass_fields__["exclude_file_pattern"].default),
     )
 
+    credentials_path = Path(config.get("credentialsPath", "credentials.json"))
+    if not credentials_path.is_absolute():
+        credentials_path = (args.config.parent / credentials_path).resolve()
+    if not credentials_path.exists():
+        example_path = credentials_path.with_name(credentials_path.stem + ".example.json")
+        raise SystemExit(
+            f"Credentials file not found: {credentials_path}\n"
+            f"Copy {example_path.name} to {credentials_path.name} in the same "
+            f"folder and fill in your real clientId/secret from "
+            f"https://{config['host']}/sfmc/api-access-pages/api-access"
+        )
+
+    companion_folders = list(config["companionFolders"])
+    if "from-glider" in companion_folders:
+        logger.warning(
+            "'from-glider' is in companionFolders but is already handled by "
+            "pull-new-downloads - removing it from the archive/logs sync to "
+            "avoid two processes independently downloading into the same folder."
+        )
+        companion_folders = [f for f in companion_folders if f != "from-glider"]
+
     def handle_shutdown(signum, frame):
         logger.info("Shutdown signal received, stopping...")
         _shutdown.set()
@@ -156,15 +188,14 @@ def main() -> None:
 
     threads: list[threading.Thread] = []
     extra_args = config.get("pullNewDownloadsExtraArgs", [])
-    if args.credentials:
-        extra_args = [*extra_args, "--credentials", str(args.credentials)]
+    # config's credentialsPath is the default for both the subprocess and our
+    # in-process client; an explicit --credentials flag can still override it.
+    extra_args = [*extra_args, "--credentials", str(args.credentials or credentials_path)]
 
     for glider_name in config["gliders"]:
-        # SFMCClient reads host/credentials the same way sfmc-api's own CLI
-        # does - see docs/authentication.md / config.py. One client per
-        # glider keeps this simple; SFMCClient handles its own auth/token
-        # refresh internally.
-        client = SFMCClient(host=config["host"]) if "host" in config else SFMCClient()
+        # One SFMCClient per glider, pointed at the same consolidated
+        # credentials file as the pull-new-downloads subprocess below.
+        client = SFMCClient(config_path=credentials_path, host=config["host"])
 
         from_glider_dir = local_base_path / glider_name / "from-glider"
         t1 = threading.Thread(
@@ -175,7 +206,7 @@ def main() -> None:
         )
         t2 = threading.Thread(
             target=run_archive_logs_sync,
-            args=(glider_name, client, config["companionFolders"], sync_config, state_path, manifest_path),
+            args=(glider_name, client, companion_folders, sync_config, state_path, manifest_path),
             daemon=True,
             name=f"archive-logs-sync-{glider_name}",
         )
