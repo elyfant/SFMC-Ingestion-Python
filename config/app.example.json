@@ -1,0 +1,10 @@
+{
+  "gliders": ["glider-1", "glider-2"],
+  "host": "sfmc.webbresearch.com",
+  "localBasePath": "/path/to/glider/data",
+  "companionFolders": ["archive", "logs"],
+  "filter": "*",
+  "marginMinutes": 2880,
+  "excludeFilePattern": "^[^/\\\\]{1,8}\\.[A-Za-z]cd$",
+  "pullNewDownloadsExtraArgs": []
+}
