@@ -194,15 +194,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# ── Smoke test before trusting this unattended ──────────────────────
-# The archive/logs half (archive_logs_sync.py) was tested here against
-# fixture zips with a fake client - that logic is solid. The STOMP
-# streaming half (SFMCClient.open_stream / subscribe_connection_events)
-# was written from the real, read source but never executed in this
-# sandbox (no network to install httpx/websockets). Before running this
-# unattended for real:
-#   1. `pip install sfmc-api` (or from your cloned copy) in a real venv.
-#   2. Run `python orchestrator.py` against selkie/unit_1272 and watch
-#      the first disconnect actually trigger an archive/logs sync -
-#      that's the one code path I couldn't verify myself.
