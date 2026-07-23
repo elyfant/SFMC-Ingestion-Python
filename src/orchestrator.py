@@ -38,6 +38,7 @@ from sfmc_api import SFMCClient
 from sfmc_api.exceptions import SFMCError
 
 from archive_logs_sync import SyncConfig, sync_all_folders
+from trigger_processing import watch_and_trigger
 
 logger = logging.getLogger("orchestrator")
 
@@ -170,6 +171,21 @@ def main() -> None:
             f"https://{config['host']}/sfmc/api-access-pages/api-access"
         )
 
+    inkfish_root_raw = config.get("inkfishRoot")
+    if inkfish_root_raw:
+        inkfish_root = Path(inkfish_root_raw)
+        if not inkfish_root.is_absolute():
+            inkfish_root = (args.config.parent / inkfish_root).resolve()
+        if not inkfish_root.exists():
+            logger.warning(
+                "inkfishRoot is set to %s but that path doesn't exist - "
+                "Inkfish processing trigger will be disabled.", inkfish_root,
+            )
+            inkfish_root = None
+    else:
+        inkfish_root = None
+        logger.info("inkfishRoot not set in config - Inkfish processing trigger disabled.")
+
     companion_folders = list(config["companionFolders"])
     if "from-glider" in companion_folders:
         logger.warning(
@@ -214,6 +230,24 @@ def main() -> None:
         t1.start()
         t2.start()
 
+        if inkfish_root is not None:
+            t3 = threading.Thread(
+                target=watch_and_trigger,
+                kwargs=dict(
+                    glider_name=glider_name,
+                    from_glider_dir=from_glider_dir,
+                    inkfish_root=inkfish_root,
+                    run_gliders_script=config.get("runGlidersScript", "run_gliders.py"),
+                    poll_seconds=config.get("triggerPollSeconds", 60),
+                    python_executable=config.get("pythonExecutable", "python3"),
+                    shutdown_event=_shutdown,
+                ),
+                daemon=True,
+                name=f"trigger-processing-{glider_name}",
+            )
+            threads.append(t3)
+            t3.start()
+
     logger.info("Orchestrator running. Ctrl-C to stop.")
     while not _shutdown.is_set():
         _shutdown.wait(1)
@@ -225,3 +259,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
