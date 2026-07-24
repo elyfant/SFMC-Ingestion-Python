@@ -53,7 +53,7 @@ def watch_and_trigger(
         try:
             logger.info("[%s] triggering %s", glider_name, run_gliders_script)
             result = subprocess.run(
-                [python_executable, run_gliders_script, glider_name],
+                [python_executable, run_gliders_script, "-g", glider_name],
                 cwd=inkfish_root,
                 capture_output=True,
                 text=True,
@@ -87,7 +87,7 @@ def watch_and_trigger(
         return True
 
     logger.info(
-        "[%s] watching %s every %ds, will run: %s %s %s (cwd=%s)",
+        "[%s] watching %s every %ds, will run: %s %s -g %s (cwd=%s)",
         glider_name, from_glider_dir, poll_seconds,
         python_executable, run_gliders_script, glider_name, inkfish_root,
     )
