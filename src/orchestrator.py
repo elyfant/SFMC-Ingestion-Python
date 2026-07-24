@@ -29,9 +29,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import signal
 import subprocess
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sfmc_api import SFMCClient
@@ -53,13 +55,20 @@ def _state_paths(base_dir: Path) -> tuple[Path, Path]:
     return base_dir / "state" / "download_state.json", base_dir / "state" / "download_manifest.json"
 
 
-def run_pull_new_downloads(glider_name: str, host: str, output_dir: Path, extra_args: list[str]) -> None:
+def run_pull_new_downloads(glider_name: str, host: str, output_dir: Path, extra_args: list[str], log_dir: Path) -> None:
     """Run sfmc-api's own from-glider tool as a subprocess, restarting it if it
     ever exits unexpectedly (network blip, SFMC restart, etc). This is a real,
     separate process - not our code - so a crash in it can't take down the
     archive/logs thread for the same glider.
+
+    Its own stdout/stderr is captured to log_dir/pull-new-downloads-<glider>.log
+    (appended, not overwritten) rather than inherited from the parent process -
+    it doesn't go through Python's logging module, so it needs its own file or
+    it only exists in whatever terminal launched the orchestrator.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"pull-new-downloads-{glider_name}.log"
     cmd = [
         "sfmc-pull-new-downloads",  # installed console script (pyproject.toml entry point)
         "--host", host,
@@ -69,9 +78,15 @@ def run_pull_new_downloads(glider_name: str, host: str, output_dir: Path, extra_
 
     backoff_seconds = 5
     while not _shutdown.is_set():
-        logger.info("[%s] starting pull-new-downloads: %s", glider_name, " ".join(cmd))
-        proc = subprocess.Popen(cmd)
-        proc.wait()
+        logger.info(
+            "[%s] starting pull-new-downloads: %s (output -> %s)",
+            glider_name, " ".join(cmd), log_path,
+        )
+        with open(log_path, "a") as log_file:
+            log_file.write(f"\n=== started {datetime.now(UTC).isoformat()} ===\n")
+            log_file.flush()
+            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+            proc.wait()
         if _shutdown.is_set():
             break
         logger.warning(
@@ -145,7 +160,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    log_dir = args.config.parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.handlers.RotatingFileHandler(
+                log_dir / "orchestrator.log", maxBytes=10_000_000, backupCount=5,
+            ),
+        ],
+    )
 
     config = _load_config(args.config)
     base_dir = args.config.parent.parent
@@ -216,7 +242,7 @@ def main() -> None:
         from_glider_dir = local_base_path / glider_name / "from-glider"
         t1 = threading.Thread(
             target=run_pull_new_downloads,
-            args=(glider_name, config["host"], from_glider_dir, extra_args),
+            args=(glider_name, config["host"], from_glider_dir, extra_args, log_dir),
             daemon=True,
             name=f"pull-new-downloads-{glider_name}",
         )
